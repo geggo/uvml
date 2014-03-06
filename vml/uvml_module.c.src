@@ -1,0 +1,402 @@
+/* -*- c -*- */
+
+#include "Python.h"
+#include "numpy/noprefix.h"
+#include "numpy/ufuncobject.h"
+//#include "config.h"
+//#include <math.h>
+
+#include "mkl.h"
+#include "mkl_vml.h"
+
+#include <stdio.h>
+
+//for testing, Nop do no calculation, but print arguments
+static void 
+NopUnary(char** args, npy_intp *dimensions, npy_intp *steps, void *NPY_UNUSED(func))
+{
+    //npy_intp i;
+    npy_intp is=steps[0];
+    npy_intp os=steps[1];
+    npy_intp n=dimensions[0];
+    //char *in = args[0], *out=args[1];
+    printf("NOP: dim %5d step1: %3d step2: %3d\n", (int)n, (int)is, (int)os);
+}
+
+static void 
+NopBinary(char** args, intp *dimensions, intp *steps, void *NPY_UNUSED(func))
+{
+    //npy_intp i;
+    npy_intp isA=steps[0];
+    npy_intp isB=steps[1];
+    npy_intp os=steps[2];
+    npy_intp n=dimensions[0];
+    //char *inA = args[0], *inB=args[1], *out=args[2];
+    printf("NOP: dim %5d stepA: %3d stepB: %3d stepO: %3d\n", (int)n, (int)isA, (int)isB, (int)os);
+
+}
+
+//for comparison
+static void 
+dMul2(char** args, intp *dimensions, intp *steps, void *NPY_UNUSED(func))
+{
+    npy_intp i;
+    npy_intp is=steps[0];
+    npy_intp os=steps[1];
+    npy_intp n=dimensions[0];
+    char *in = args[0], *out=args[1];
+    for (i=0; i<n; i++) {
+	*((double *)out) =  2*(*((double *)in));
+	in += is;
+	out += os;
+    }
+}
+
+//for comparison, slightly different loop
+static void
+dExp2(char** args, intp *dimensions, intp *steps, void *NPY_UNUSED(func))
+{
+    npy_intp i;
+    npy_intp n=dimensions[0];
+    double *in = (double *)args[0], *out=(double *)args[1];
+    for (i=0; i<n; i++) {
+	*out =  exp(*in);
+	in ++;
+	out ++;
+    }
+}
+
+
+// unitary real vml functions
+/* NOTE copying: if in is strided, but out not, use out for first copy
+ * target. But, what happens, if in is strided, but overlaps with output
+ * arguments  */
+
+#define UNARY_FUNC(FNAME, TYPE, TYPECHAR)				\
+    static void								\
+    u_v##TYPECHAR##FNAME(char** args,					\
+			 npy_intp *dimensions, npy_intp *steps,		\
+			 void *NPY_UNUSED(func))			\
+    {									\
+	npy_intp n = dimensions[0];					\
+	TYPE *in = (TYPE *)args[0];					\
+	TYPE *out = (TYPE *)args[1];					\
+	npy_intp is=steps[0];						\
+	npy_intp os=steps[1];						\
+	int in_packed = 0, out_packed = 0;				\
+	TYPE * inwork = in;						\
+	TYPE * outwork = out;						\
+	if (is != sizeof(TYPE)) {					\
+	    if (os == sizeof(TYPE)) {					\
+		    inwork = outwork;					\
+		}							\
+		else {							\
+		    in_packed = 1;					\
+		    inwork = (TYPE *)MKL_malloc(sizeof(TYPE)*n, 16);	\
+		}							\
+	    v##TYPECHAR##PackI(n, in, is/sizeof(TYPE), inwork);		\
+	}								\
+	if (os != sizeof(TYPE)) {					\
+	    out_packed = 1;						\
+	    outwork = (TYPE *)MKL_malloc(sizeof(TYPE)*n, 16);		\
+	}								\
+	v##TYPECHAR##FNAME(n, inwork, outwork);				\
+	if (out_packed) {						\
+	    v##TYPECHAR##UnpackI(n, outwork, out, os/sizeof(TYPE));	\
+	    MKL_free(outwork);						\
+	}								\
+	if (in_packed) {						\
+	    MKL_free(inwork);						\
+	}								\
+    }									\
+
+#define DEFINE_UNARY_FUNC_sd(FNAME)					\
+    UNARY_FUNC(FNAME, float, s)						\
+    UNARY_FUNC(FNAME, double, d)					\
+    static PyUFuncGenericFunction FNAME##_functions[] = {u_vs##FNAME, u_vd##FNAME};
+
+/**begin repeat
+ * #fname = Sqr, Abs,
+            Inv, Sqrt, InvSqrt, Cbrt, InvCbrt, Pow2o3, Pow3o2, 
+	    Exp, Expm1, Ln, Log10, Log1p, 
+            Cos, Sin, Tan, Acos, Asin, Atan, 
+            Cosh, Sinh, Tanh, Acosh, Asinh, Atanh, 
+            Erf, Erfc, ErfInv,
+	    Floor, Ceil, Trunc, Round, NearbyInt#
+ */
+DEFINE_UNARY_FUNC_sd(@fname@)
+/**end repeat**/
+
+
+// unitary complex vml functions
+/**begin repeat
+ * #fname = Conj, Sqrt, Exp, Ln, Log10#
+ */
+
+/**begin repeat1
+ * #type      = MKL_Complex8, MKL_Complex16#
+ * #typeshort = c, z#
+ */
+static void
+u_v@typeshort@@fname@(char** args, npy_intp *dimensions, npy_intp *steps, void *NPY_UNUSED(func))
+{
+    npy_intp n = dimensions[0];
+    @type@ *in = (@type@ *)args[0];
+    @type@ *out = (@type@ *)args[1];
+    //npy_intp is=steps[0];
+    //npy_intp os=steps[1];
+
+    //int in_packed = 0, out_packed = 0;
+    @type@* inwork = in;
+    @type@* outwork = out;
+
+    /*
+    if (is != sizeof(@type@))
+    {
+	in_packed = 1;
+	inwork = (@type@ *)MKL_malloc(sizeof(@type@)*n, 16);
+	v@typeshort@PackI(n, in, is/sizeof(@type@), inwork);
+    }
+
+    if (os != sizeof(@type@))
+    {
+	out_packed = 1;
+	outwork = (@type@ *)MKL_malloc(sizeof(@type@)*n, 16);
+    }
+    */
+    
+    v@typeshort@@fname@(n, inwork, outwork);
+    
+    /*
+    if (out_packed)
+    {
+	v@typeshort@UnpackI(n, outwork, out, os/sizeof(@type@));
+	MKL_free(outwork);
+    }
+    
+    if (in_packed)
+    {
+	MKL_free(inwork);
+    }
+    */
+    
+}
+/**end repeat1**/
+static PyUFuncGenericFunction @fname@_functions_complex[] = {u_vc@fname@, u_vz@fname@};
+/**end repeat**/
+
+// binary vml functions
+
+/**begin repeat
+ * #fname = Add, Sub, Mul, Div, Pow, Hypot, Atan2#
+ */
+
+/**begin repeat1
+ * #type      = float, double#
+ * #typeshort = s, d#
+ */
+
+static void
+u_v@typeshort@@fname@(char** args, intp *dimensions, intp *steps, void *NPY_UNUSED(func))
+{
+    npy_intp n = dimensions[0];
+    @type@ *inA = (@type@ *)args[0];
+    @type@ *inB = (@type@ *)args[1];
+    @type@ *out = (@type@ *)args[2];
+
+    npy_intp isA=steps[0];
+    npy_intp isB=steps[1];
+    npy_intp os=steps[2];
+    
+    int inA_packed = 0, inB_packed = 0, out_packed = 0;
+    @type@* inAwork = inA;
+    @type@* inBwork = inB;
+    @type@* outwork = out;
+
+    if (isA != sizeof(@type@))
+    {
+	inA_packed = 1;
+	inAwork = (@type@ *)MKL_malloc(sizeof(@type@)*n, 16);
+	v@typeshort@PackI(n, inA, isA/sizeof(@type@), inAwork);
+    }
+
+    if (isB != sizeof(@type@))
+    {
+	inB_packed = 1;
+	inBwork = (@type@ *)MKL_malloc(sizeof(@type@)*n, 16);
+	v@typeshort@PackI(n, inB, isB/sizeof(@type@), inBwork);
+    }
+
+    if (os != sizeof(@type@))
+    {
+	out_packed = 1;
+	outwork = (@type@ *)MKL_malloc(sizeof(@type@)*n, 16);
+    }
+
+    v@typeshort@@fname@(n, inAwork, inBwork, outwork);
+
+    if (out_packed)
+    {
+	v@typeshort@UnpackI(n, outwork, out, os/sizeof(@type@));
+	MKL_free(outwork);
+    }
+    
+    if (inA_packed) { MKL_free(inAwork); }
+    if (inB_packed) { MKL_free(inBwork); }
+
+}
+
+/**end repeat1**/
+static PyUFuncGenericFunction @fname@_functions[] = {u_vs@fname@, u_vd@fname@};
+
+/**end repeat**/
+
+
+
+static PyUFuncGenericFunction Nop_unary_functions[] = {NopUnary, NopUnary, NopUnary, NopUnary};
+static PyUFuncGenericFunction Nop_binary_functions[] = {NopBinary, NopBinary};
+static PyUFuncGenericFunction Exp2_functions[] = {dExp2};
+static PyUFuncGenericFunction Mul2_functions[] = {dMul2};
+
+static void * blank2_data[] = { (void *)NULL, (void *)NULL};
+static void * blank4_data[] = { (void *)NULL, (void *)NULL, (void *)NULL, (void *)NULL};
+
+static char DD_signatures[] = {NPY_DOUBLE, NPY_DOUBLE};
+static char FF_DD_signatures[] = {NPY_FLOAT, NPY_FLOAT,
+				  NPY_DOUBLE, NPY_DOUBLE};
+static char CC_ZZ_signatures[] = {NPY_CFLOAT, NPY_CFLOAT,
+				  NPY_CDOUBLE, NPY_CDOUBLE};
+static char FFF_DDD_signatures[] = {NPY_FLOAT, NPY_FLOAT, NPY_FLOAT,
+				    NPY_DOUBLE, NPY_DOUBLE, NPY_DOUBLE};
+
+static char FF_DD_CC_ZZ_signatures[] = {NPY_FLOAT, NPY_FLOAT,
+					NPY_DOUBLE, NPY_DOUBLE, 
+					NPY_CFLOAT, NPY_CFLOAT,
+					NPY_CDOUBLE, NPY_CDOUBLE};
+
+static PyMethodDef uvmlmethods[] = {
+    {NULL, NULL, 0, NULL}
+};
+
+PyMODINIT_FUNC
+inituvml(void)
+{
+    PyObject *f, *dict, *module;
+    module = Py_InitModule("uvml", uvmlmethods);
+
+    import_array();
+    import_ufunc();
+   
+    dict = PyModule_GetDict(module);
+
+    //unitary vml functions
+    /**begin repeat*
+     * #fname = Sqr, Abs,
+            Inv, Sqrt, InvSqrt, Cbrt, InvCbrt, Pow2o3, Pow3o2, 
+	    Exp, Expm1, Ln, Log10, Log1p, 
+            Cos, Sin, Tan, Acos, Asin, Atan, 
+            Cosh, Sinh, Tanh, Acosh, Asinh, Atanh, 
+            Erf, Erfc, ErfInv,
+	    Floor, Ceil, Trunc, Round, NearbyInt#
+
+     */
+    
+    f = PyUFunc_FromFuncAndData( @fname@_functions, 
+				 blank2_data,
+				 FF_DD_signatures, 2,
+				 1,
+				 1,
+				 PyUFunc_One,
+				 "@fname@",
+				 "",
+				 0);
+    
+    PyDict_SetItemString(dict, "@fname@", f);
+    Py_DECREF(f);
+    /**end repeat**/
+
+    //binary vml functions
+    /**begin repeat*
+     * #fname = Add, Sub, Mul, Div, Pow, Hypot, Atan2#
+     */
+    
+    f = PyUFunc_FromFuncAndData( @fname@_functions, 
+				 blank2_data,
+				 FFF_DDD_signatures, 2,
+				 2,
+				 1,
+				 PyUFunc_One,
+				 "@fname@",
+				 "",
+				 0);
+    
+    PyDict_SetItemString(dict, "@fname@", f);
+    Py_DECREF(f);
+    /**end repeat**/
+
+
+    //unitary complex vml functions
+    /**begin repeat*
+     * #fname = Conj, Sqrt, Exp, Ln, Log10#
+     */
+    
+    f = PyUFunc_FromFuncAndData( @fname@_functions_complex, 
+				 blank2_data,
+				 CC_ZZ_signatures, 2,
+				 1,
+				 1,
+				 PyUFunc_One,
+				 "c@fname@",
+				 "",
+				 0);
+    
+    PyDict_SetItemString(dict, "c@fname@", f);
+    Py_DECREF(f);
+    /**end repeat**/
+
+
+    
+
+    //choose VML accuracy mode
+    vmlSetMode(VML_LA | VML_DOUBLE_CONSISTENT | VML_ERRMODE_IGNORE);
+
+    //reference functions
+    f = PyUFunc_FromFuncAndData( Nop_unary_functions, blank4_data,
+				 FF_DD_CC_ZZ_signatures, 4,
+				 1, 1, PyUFunc_One,
+				 "NopUnary", "do nothin", 0);
+    PyDict_SetItemString(dict, "NopUnary", f);
+    Py_DECREF(f);
+
+    f = PyUFunc_FromFuncAndData( Nop_binary_functions, blank2_data,
+				 FFF_DDD_signatures, 2,
+				 2, 1, PyUFunc_One,
+				 "NopBinary", "do nothin", 0);
+    PyDict_SetItemString(dict, "NopBinary", f);
+    Py_DECREF(f);
+
+    f = PyUFunc_FromFuncAndData( Exp2_functions, blank2_data,
+				 DD_signatures, 1,
+				 1,
+				 1,
+				 PyUFunc_One,
+				 "Exp2",
+				 "calculate exponential",
+				 0);
+    PyDict_SetItemString(dict, "Exp2", f);
+    Py_DECREF(f);
+
+    f = PyUFunc_FromFuncAndData( Mul2_functions, blank2_data,
+				 DD_signatures, 1,
+				 1,
+				 1,
+				 PyUFunc_One,
+				 "Mul2",
+				 "calculate exponential",
+				 0);
+    
+    PyDict_SetItemString(dict, "Mul2", f);
+    Py_DECREF(f);
+
+    
+}
